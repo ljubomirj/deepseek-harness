@@ -467,6 +467,7 @@
     { "path": "./packages/interaction/user-approval" },
     { "path": "./packages/interaction/permission-presets" },
     { "path": "./packages/experimental/auto-review" },
+    { "path": "./packages/experimental/advisor" },
     { "path": "./packages/experimental/claude-code-mods" },
     { "path": "./packages/core/tools" },
     { "path": "./packages/core/tool-executor-native" },
