@@ -22,7 +22,10 @@ pre-commit:
       stage_fixed: true
 
     - name: whitespace (staged)
-      run: git diff --cached --check
+      # --no-pager is required: lefthook runs jobs on a PTY, so a bare `git diff`
+      # starts the pager and waits for input — the hook then hangs at
+      # "waiting: whitespace (staged)" until the commit is interrupted.
+      run: git --no-pager diff --cached --check
 
     - name: pi-ai provider metadata
       glob: '{pnpm-lock.yaml,packages/llm/llm-pi-ai/package.json,packages/llm/llm-pi-ai/scripts/gen-provider-data.ts,packages/llm/llm-pi-ai/src/provider-data.generated.ts}'

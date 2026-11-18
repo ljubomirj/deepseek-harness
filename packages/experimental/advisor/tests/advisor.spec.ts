@@ -9,11 +9,13 @@ import type { Message } from '@deepseek-ai/dsh-llm'
 import { buildPacket, isAdvisorTurn, parseAdvice, MARKER } from '../src/logic.ts'
 
 function message(role: Message['role'], text: string): Message {
+  // Message is a union: a tool-result member also needs source/toolCallId, so the
+  // fixture asserts through unknown rather than claiming the whole union.
   return {
     id: `m-${text}`,
     role,
     content: [{ type: 'text', text }],
-  } as Message
+  } as unknown as Message
 }
 
 describe('parseAdvice', () => {
