@@ -60,20 +60,28 @@ export function effectiveRoute(
 }
 
 /**
- * Split a `/advisor model` argument: `provider/model` when the first segment
- * names a provider, otherwise a bare model id. Slashed model ids that do not
- * start with a provider stay whole; the command resolves them against the
- * effective provider.
+ * Split a `/advisor model` argument: `[provider/]model[:effort]`. The effort
+ * rides after the last colon, the provider before the first slash. Slashed
+ * model ids that do not start with a known provider stay whole; the command
+ * resolves them against the effective provider.
  * @param arg - raw command argument.
- * @returns the optional provider plus the model id.
+ * @returns the optional provider and effort plus the model id.
  */
-export function splitProviderModel(arg: string): { provider?: string; model: string } {
+export function splitProviderModel(arg: string): { provider?: string; model: string; effort?: string } {
   const text = arg.trim()
-  const slash = text.indexOf('/')
-  if (slash > 0 && slash < text.length - 1) {
-    return { provider: text.slice(0, slash), model: text.slice(slash + 1) }
+  let rest = text
+  let effort: string | undefined
+  const colon = text.lastIndexOf(':')
+  if (colon > 0 && colon < text.length - 1) {
+    effort = text.slice(colon + 1)
+    rest = text.slice(0, colon)
   }
-  return { model: text }
+  const slash = rest.indexOf('/')
+  if (slash > 0 && slash < rest.length - 1) {
+    const provider = rest.slice(0, slash)
+    return { provider, model: rest.slice(slash + 1), ...effort === undefined ? {} : { effort } }
+  }
+  return { model: rest, ...effort === undefined ? {} : { effort } }
 }
 
 /** Advice extracted from the reviewer's answer. */

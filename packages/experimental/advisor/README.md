@@ -49,10 +49,16 @@ Commands:
 /advisor test               queue a test note
 ```
 
+`/advisor model` accepts `provider/model:effort` in one argument — the effort
+is validated against the new route and applied together with it.
+
 Runtime `model`/`provider`/`effort` choices are overrides: they win over the
 profile config and persist in `$DSH_HOME/advisor/state.json` until cleared by
-editing that file. A model switch re-validates the effort against the new route
-and clears it with a notice when the route does not offer it.
+editing that file. A model switch without an effort re-validates the current
+effort against the new route and clears it with a notice when the route does
+not offer it. The state file also carries `effective` — the route a review
+call uses right now — written at every boot and change, so status surfaces can
+render the reviewer without reading the profile.
 
 ## How it works
 

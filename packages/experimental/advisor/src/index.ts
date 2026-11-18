@@ -100,10 +100,17 @@ function readState(fallback: boolean): AdvisorState {
   }
 }
 
-function writeState(state: AdvisorState): void {
+/**
+ * Persist the runtime state plus the effective route, so status-surface
+ * readers (the TUI) can show the reviewer without reading the profile.
+ * `effective` is metadata for external readers; it is ignored on load.
+ */
+function writeState(state: AdvisorState, config: AdvisorConfig): void {
   const path = statePath()
   mkdirSync(join(path, '..'), { recursive: true })
-  writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, 'utf8')
+  const record: Record<string, unknown> = { ...state }
+  record['effective'] = effectiveRoute(config.provider, config.model, config.effort, state)
+  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`, 'utf8')
 }
 
 /** Collect the visible text of a reviewer stream; reasoning blocks are ignored. */
@@ -232,6 +239,7 @@ async function reconcileEffort(
 /** Plugin entry: command plus detached turn-stop listener. */
 export function apply(ctx: Context, config: AdvisorConfig): void {
   const state = readState(config.enabled)
+  writeState(state, config)
 
   ctx.commands.register({
     name: 'advisor',
@@ -241,12 +249,12 @@ export function apply(ctx: Context, config: AdvisorConfig): void {
       if (input === '' || input === 'status') return { kind: 'success', text: status(config, state) }
       if (input === 'on') {
         state.enabled = true
-        writeState(state)
+        writeState(state, config)
         return { kind: 'success', text: status(config, state) }
       }
       if (input === 'off') {
         state.enabled = false
-        writeState(state)
+        writeState(state, config)
         return { kind: 'success', text: status(config, state) }
       }
       if (input === 'effort' || input.startsWith('effort ')) {
@@ -266,7 +274,7 @@ export function apply(ctx: Context, config: AdvisorConfig): void {
           }
         }
         state.effort = arg
-        writeState(state)
+        writeState(state, config)
         return { kind: 'success', text: status(config, state) }
       }
       if (input === 'model' || input.startsWith('model ')) {
@@ -296,9 +304,23 @@ export function apply(ctx: Context, config: AdvisorConfig): void {
         }
         state.provider = provider
         state.model = model
+        if (split.effort !== undefined) {
+          const efforts = await offeredEfforts(ctx, provider, model)
+          if (efforts.length > 0 && !efforts.includes(split.effort)) {
+            state.provider = current.provider
+            state.model = current.model
+            return {
+              kind: 'error',
+              text: `advisor: effort "${split.effort}" is not offered by ${provider}/${model}; offered: ${efforts.join(', ')}`,
+            }
+          }
+          state.effort = split.effort
+          writeState(state, config)
+          return { kind: 'success', text: status(config, state) }
+        }
         const route = effectiveRoute(config.provider, config.model, config.effort, state)
         const effortNote = await reconcileEffort(ctx, route, state)
-        writeState(state)
+        writeState(state, config)
         return { kind: 'success', text: [status(config, state), ...effortNote === undefined ? [] : [effortNote]].join('\n') }
       }
       if (input === 'provider' || input.startsWith('provider ')) {
@@ -327,7 +349,7 @@ export function apply(ctx: Context, config: AdvisorConfig): void {
         state.provider = arg
         const route = effectiveRoute(config.provider, config.model, config.effort, state)
         const effortNote = await reconcileEffort(ctx, route, state)
-        writeState(state)
+        writeState(state, config)
         return { kind: 'success', text: [status(config, state), ...effortNote === undefined ? [] : [effortNote]].join('\n') }
       }
       if (input === 'test') {

@@ -66,9 +66,17 @@ describe('splitProviderModel', () => {
     expect(splitProviderModel('gpt-6-luna')).toEqual({ model: 'gpt-6-luna' })
   })
 
+  it('parses provider/model:effort', () => {
+    expect(splitProviderModel('opencode-go/deepseek-v4.1-flash:xhigh')).toEqual({
+      provider: 'opencode-go', model: 'deepseek-v4.1-flash', effort: 'xhigh',
+    })
+    expect(splitProviderModel('gpt-6-luna:max')).toEqual({ model: 'gpt-6-luna', effort: 'max' })
+  })
+
   it('treats empty and malformed arguments as a bare model', () => {
     expect(splitProviderModel('  /leading')).toEqual({ model: '/leading' })
     expect(splitProviderModel('trailing/')).toEqual({ model: 'trailing/' })
+    expect(splitProviderModel('ends-with:')).toEqual({ model: 'ends-with:' })
   })
 })
 
