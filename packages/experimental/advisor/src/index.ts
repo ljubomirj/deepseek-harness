@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
-import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, ReasoningEffortId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, Message, StreamChunk } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 import { MARKER, buildPacket, isAdvisorTurn, parseAdvice } from './logic.ts'
@@ -32,6 +32,8 @@ export interface AdvisorConfig {
   provider: string
   /** Reviewer model. Keep it a different family from the primary where possible. */
   model: string
+  /** Reasoning effort for the reviewer; empty keeps the route default. */
+  effort: string
   /** Only review turns with at least this many tool calls. */
   minTools: number
   /** Soft cap on the rendered transcript. */
@@ -46,6 +48,7 @@ export const Config: z<AdvisorConfig> = z.object({
   enabled: z.boolean().default(false),
   provider: z.string().default('opencode-go'),
   model: z.string().default('gpt-6-luna'),
+  effort: z.string().default(''),
   minTools: z.number().default(2),
   maxChars: z.number().default(20000),
   timeoutMs: z.number().default(60000),
@@ -75,6 +78,8 @@ Rules:
 
 interface AdvisorState {
   enabled: boolean
+  /** Runtime-selected reasoning effort via `/advisor effort`; absent keeps the configured one. */
+  effort?: string
 }
 
 function statePath(): string {
@@ -85,7 +90,10 @@ function statePath(): string {
 function readState(fallback: boolean): AdvisorState {
   try {
     const parsed = JSON.parse(readFileSync(statePath(), 'utf8')) as Partial<AdvisorState>
-    return { enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : fallback }
+    return {
+      enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : fallback,
+      ...typeof parsed.effort === 'string' && parsed.effort !== '' ? { effort: parsed.effort } : {},
+    }
   } catch (error) {
     // Unreadable or absent state falls back to the configured default.
     void error
@@ -122,6 +130,7 @@ async function review(
   ctx: Context,
   agent: Agent,
   config: AdvisorConfig,
+  state: AdvisorState,
   signal: AbortSignal,
 ): Promise<void> {
   let messages: readonly Message[]
@@ -136,6 +145,7 @@ async function review(
   const packet = buildPacket(messages, config.maxChars)
   if (packet.toolCalls < config.minTools) return
 
+  const effort = state.effort ?? config.effort
   const controller = new AbortController()
   const timer = setTimeout(() => { controller.abort() }, config.timeoutMs)
   const abort = (): void => { controller.abort() }
@@ -144,6 +154,7 @@ async function review(
     const options: GenerateOptions = {
       provider: config.provider,
       model: config.model,
+      ...effort === '' ? {} : { reasoningEffort: ReasoningEffortId(effort) },
       system: SYSTEM,
       messages: [{
         role: 'user',
@@ -174,6 +185,7 @@ function status(config: AdvisorConfig, state: AdvisorState): string {
   return [
     `advisor: ${state.enabled ? 'on' : 'off'}`,
     `model: ${config.provider}/${config.model}`,
+    `effort: ${(state.effort ?? config.effort) === '' ? '(route default)' : state.effort ?? config.effort}`,
     `gate: >=${config.minTools} tool calls, <=${config.maxChars} chars, ${config.timeoutMs} ms`,
   ].join('\n')
 }
@@ -184,7 +196,7 @@ export function apply(ctx: Context, config: AdvisorConfig): void {
 
   ctx.commands.register({
     name: 'advisor',
-    description: 'Second-model review of the last turn (on|off|status|test)',
+    description: 'Second-model review of the last turn (on|off|status|effort <id>|test)',
     handler: async (invocation: CommandInvocation): Promise<CommandResult> => {
       const input = invocation.rawInput.trim().toLowerCase()
       if (input === '' || input === 'status') return { kind: 'success', text: status(config, state) }
@@ -198,6 +210,33 @@ export function apply(ctx: Context, config: AdvisorConfig): void {
         writeState(state)
         return { kind: 'success', text: status(config, state) }
       }
+      if (input === 'effort' || input.startsWith('effort ')) {
+        const arg = invocation.rawInput.trim().slice('effort'.length).trim()
+        let available: readonly string[] = []
+        try {
+          const resolved = await ctx.llm.resolveModelInfo(config.provider, config.model)
+          available = resolved.reasoning?.efforts.map(level => level.id) ?? []
+        } catch (error) {
+          // Catalog resolution failure leaves the offered list unknown.
+          void error
+        }
+        if (arg === '') {
+          const current = state.effort ?? config.effort
+          return {
+            kind: 'success',
+            text: `advisor effort: ${current === '' ? '(route default)' : current}\noffered: ${available.join(', ') || 'none'}`,
+          }
+        }
+        if (available.length > 0 && !available.includes(arg)) {
+          return {
+            kind: 'error',
+            text: `advisor: "${arg}" is not offered for ${config.provider}/${config.model}; offered: ${available.join(', ')}`,
+          }
+        }
+        state.effort = arg
+        writeState(state)
+        return { kind: 'success', text: status(config, state) }
+      }
       if (input === 'test') {
         invocation.agent.followup(createUserMessage({
           content: [{ type: 'text', text: `${MARKER} [NIT] advisor test note — delivery works; ignore it.` }],
@@ -205,13 +244,13 @@ export function apply(ctx: Context, config: AdvisorConfig): void {
         }))
         return { kind: 'success', text: 'advisor: test note queued' }
       }
-      return { kind: 'error', text: `Usage: /advisor [on|off|status|test]\n${status(config, state)}` }
+      return { kind: 'error', text: `Usage: /advisor [on|off|status|effort <id>|test]\n${status(config, state)}` }
     },
   })
 
   ctx.on('agent/turn-stopping', ({ agent, signal }) => {
     if (!state.enabled) return
     // Detached on purpose: the turn must not wait for the reviewer.
-    void review(ctx, agent, config, signal)
+    void review(ctx, agent, config, state, signal)
   })
 }

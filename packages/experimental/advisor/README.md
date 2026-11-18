@@ -18,9 +18,16 @@ Add it to a profile and enable it in that profile's patch:
       name: '@deepseek-ai/dsh-advisor'
       config:
         enabled: true
-        provider: opencode-go
+        provider: opencode-go-equal
         model: gpt-6-luna
+        effort: xhigh
 ```
+
+The provider is independent of the session's main model: point it at any
+configured route (a second subscription keeps reviewer quota off the primary).
+`effort` selects the reviewer's reasoning level; empty keeps the route default.
+The level must be one the model entry declares (`reasoningEfforts` on its
+`llm-pi-ai` models entry).
 
 Or install the package patch:
 
@@ -31,9 +38,11 @@ pnpm dsh plugin --profile dsh-tui add ./packages/experimental/advisor
 Commands:
 
 ```
-/advisor            status
-/advisor on|off     toggle (persisted in $DSH_HOME/advisor/state.json)
-/advisor test       queue a test note
+/advisor                 status
+/advisor on|off          toggle (persisted in $DSH_HOME/advisor/state.json)
+/advisor effort          show the current and offered reasoning levels
+/advisor effort <id>     set the reviewer's reasoning level (persisted)
+/advisor test            queue a test note
 ```
 
 ## How it works
