@@ -38,12 +38,21 @@ pnpm dsh plugin --profile dsh-tui add ./packages/experimental/advisor
 Commands:
 
 ```
-/advisor                 status
-/advisor on|off          toggle (persisted in $DSH_HOME/advisor/state.json)
-/advisor effort          show the current and offered reasoning levels
-/advisor effort <id>     set the reviewer's reasoning level (persisted)
-/advisor test            queue a test note
+/advisor                    status
+/advisor on|off             toggle (persisted in $DSH_HOME/advisor/state.json)
+/advisor model              show the reviewer model and the provider's offered models
+/advisor model <id>         set the reviewer model, bare or `provider/model` (persisted)
+/advisor provider           show the reviewer provider and configured providers
+/advisor provider <name>    move the reviewer to another configured route (persisted)
+/advisor effort             show the current and offered reasoning levels
+/advisor effort <id>        set the reviewer's reasoning level (persisted; cleared when a model switch drops it)
+/advisor test               queue a test note
 ```
+
+Runtime `model`/`provider`/`effort` choices are overrides: they win over the
+profile config and persist in `$DSH_HOME/advisor/state.json` until cleared by
+editing that file. A model switch re-validates the effort against the new route
+and clears it with a notice when the route does not offer it.
 
 ## How it works
 

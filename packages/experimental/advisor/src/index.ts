@@ -19,7 +19,8 @@ import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands
 import { BlockAssembler, ReasoningEffortId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, Message, StreamChunk } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
-import { MARKER, buildPacket, isAdvisorTurn, parseAdvice } from './logic.ts'
+import { MARKER, buildPacket, effectiveRoute, isAdvisorTurn, parseAdvice, splitProviderModel } from './logic.ts'
+import type { AdvisorRoute, AdvisorState } from './logic.ts'
 
 export const name = 'experimental-advisor'
 export const inject = ['commands', 'llm']
@@ -76,11 +77,7 @@ Rules:
 [CONCERN] the agent may be heading the wrong way or missed something material.
 [BLOCKER] continuing would clearly waste the user's time or produce something fundamentally unsound.`
 
-interface AdvisorState {
-  enabled: boolean
-  /** Runtime-selected reasoning effort via `/advisor effort`; absent keeps the configured one. */
-  effort?: string
-}
+
 
 function statePath(): string {
   const root = process.env['DSH_HOME'] ?? join(homedir(), '.dsh')
@@ -92,7 +89,9 @@ function readState(fallback: boolean): AdvisorState {
     const parsed = JSON.parse(readFileSync(statePath(), 'utf8')) as Partial<AdvisorState>
     return {
       enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : fallback,
-      ...typeof parsed.effort === 'string' && parsed.effort !== '' ? { effort: parsed.effort } : {},
+      ...typeof parsed.effort === 'string' ? { effort: parsed.effort } : {},
+      ...typeof parsed.provider === 'string' && parsed.provider !== '' ? { provider: parsed.provider } : {},
+      ...typeof parsed.model === 'string' && parsed.model !== '' ? { model: parsed.model } : {},
     }
   } catch (error) {
     // Unreadable or absent state falls back to the configured default.
@@ -145,16 +144,16 @@ async function review(
   const packet = buildPacket(messages, config.maxChars)
   if (packet.toolCalls < config.minTools) return
 
-  const effort = state.effort ?? config.effort
+  const route = effectiveRoute(config.provider, config.model, config.effort, state)
   const controller = new AbortController()
   const timer = setTimeout(() => { controller.abort() }, config.timeoutMs)
   const abort = (): void => { controller.abort() }
   signal.addEventListener('abort', abort, { once: true })
   try {
     const options: GenerateOptions = {
-      provider: config.provider,
-      model: config.model,
-      ...effort === '' ? {} : { reasoningEffort: ReasoningEffortId(effort) },
+      provider: route.provider,
+      model: route.model,
+      ...route.effort === '' ? {} : { reasoningEffort: ReasoningEffortId(route.effort) },
       system: SYSTEM,
       messages: [{
         role: 'user',
@@ -182,12 +181,52 @@ async function review(
 }
 
 function status(config: AdvisorConfig, state: AdvisorState): string {
+  const route = effectiveRoute(config.provider, config.model, config.effort, state)
+  const overridden = state.provider !== undefined || state.model !== undefined
+    ? ' (runtime override)' : ''
   return [
     `advisor: ${state.enabled ? 'on' : 'off'}`,
-    `model: ${config.provider}/${config.model}`,
-    `effort: ${(state.effort ?? config.effort) === '' ? '(route default)' : state.effort ?? config.effort}`,
+    `model: ${route.provider}/${route.model}${overridden}`,
+    `effort: ${route.effort === '' ? '(none)' : route.effort}`,
     `gate: >=${config.minTools} tool calls, <=${config.maxChars} chars, ${config.timeoutMs} ms`,
   ].join('\n')
+}
+
+/** Model ids one provider route offers; empty when the route cannot be listed. */
+async function offeredModels(ctx: Context, provider: string): Promise<readonly string[]> {
+  try {
+    return (await ctx.llm.listModels(provider)).map(info => info.id)
+  } catch (error) {
+    // An unlistable route leaves the offered set unknown.
+    void error
+    return []
+  }
+}
+
+/** Reasoning efforts one provider/model route offers; empty when unresolvable. */
+async function offeredEfforts(ctx: Context, provider: string, model: string): Promise<readonly string[]> {
+  try {
+    const resolved = await ctx.llm.resolveModelInfo(provider, model)
+    return resolved.reasoning?.efforts.map(level => level.id) ?? []
+  } catch (error) {
+    // An unresolvable route leaves the offered set unknown.
+    void error
+    return []
+  }
+}
+
+/** Validate that the effective effort is offered; clear it when the route lacks it. */
+async function reconcileEffort(
+  ctx: Context,
+  route: AdvisorRoute,
+  state: AdvisorState,
+): Promise<string | undefined> {
+  if (route.effort === '') return undefined
+  const efforts = await offeredEfforts(ctx, route.provider, route.model)
+  if (efforts.length === 0 || efforts.includes(route.effort)) return undefined
+  const dropped = route.effort
+  state.effort = ''
+  return `effort "${dropped}" is not offered by ${route.provider}/${route.model}; cleared — set one with /advisor effort`
 }
 
 /** Plugin entry: command plus detached turn-stop listener. */
@@ -196,7 +235,7 @@ export function apply(ctx: Context, config: AdvisorConfig): void {
 
   ctx.commands.register({
     name: 'advisor',
-    description: 'Second-model review of the last turn (on|off|status|effort <id>|test)',
+    description: 'Second-model review of the last turn (on|off|status|model <id>|provider <name>|effort <id>|test)',
     handler: async (invocation: CommandInvocation): Promise<CommandResult> => {
       const input = invocation.rawInput.trim().toLowerCase()
       if (input === '' || input === 'status') return { kind: 'success', text: status(config, state) }
@@ -212,19 +251,12 @@ export function apply(ctx: Context, config: AdvisorConfig): void {
       }
       if (input === 'effort' || input.startsWith('effort ')) {
         const arg = invocation.rawInput.trim().slice('effort'.length).trim()
-        let available: readonly string[] = []
-        try {
-          const resolved = await ctx.llm.resolveModelInfo(config.provider, config.model)
-          available = resolved.reasoning?.efforts.map(level => level.id) ?? []
-        } catch (error) {
-          // Catalog resolution failure leaves the offered list unknown.
-          void error
-        }
+        const route = effectiveRoute(config.provider, config.model, config.effort, state)
+        const available = await offeredEfforts(ctx, route.provider, route.model)
         if (arg === '') {
-          const current = state.effort ?? config.effort
           return {
             kind: 'success',
-            text: `advisor effort: ${current === '' ? '(route default)' : current}\noffered: ${available.join(', ') || 'none'}`,
+            text: `advisor effort: ${route.effort === '' ? '(none)' : route.effort}\noffered by ${route.provider}/${route.model}: ${available.join(', ') || 'none'}`,
           }
         }
         if (available.length > 0 && !available.includes(arg)) {
@@ -237,6 +269,67 @@ export function apply(ctx: Context, config: AdvisorConfig): void {
         writeState(state)
         return { kind: 'success', text: status(config, state) }
       }
+      if (input === 'model' || input.startsWith('model ')) {
+        const arg = invocation.rawInput.trim().slice('model'.length).trim()
+        const current = effectiveRoute(config.provider, config.model, config.effort, state)
+        if (arg === '') {
+          const ids = await offeredModels(ctx, current.provider)
+          return {
+            kind: 'success',
+            text: `advisor model: ${current.provider}/${current.model}\noffered on ${current.provider}: ${ids.join(', ') || 'none'}`,
+          }
+        }
+        const split = splitProviderModel(arg)
+        let provider = current.provider
+        let model = split.model
+        if (split.provider !== undefined) {
+          const known = ctx.llm.listProviders().some(info => info.id === split.provider)
+          if (known) provider = split.provider
+          else model = arg
+        }
+        const ids = await offeredModels(ctx, provider)
+        if (ids.length > 0 && !ids.includes(model)) {
+          return {
+            kind: 'error',
+            text: `advisor: model "${model}" is not offered on ${provider}; offered: ${ids.join(', ')}`,
+          }
+        }
+        state.provider = provider
+        state.model = model
+        const route = effectiveRoute(config.provider, config.model, config.effort, state)
+        const effortNote = await reconcileEffort(ctx, route, state)
+        writeState(state)
+        return { kind: 'success', text: [status(config, state), ...effortNote === undefined ? [] : [effortNote]].join('\n') }
+      }
+      if (input === 'provider' || input.startsWith('provider ')) {
+        const arg = invocation.rawInput.trim().slice('provider'.length).trim()
+        const current = effectiveRoute(config.provider, config.model, config.effort, state)
+        const providerIds = ctx.llm.listProviders().map(info => info.id)
+        if (arg === '') {
+          return {
+            kind: 'success',
+            text: `advisor provider: ${current.provider}\noffered: ${providerIds.join(', ') || 'none'}`,
+          }
+        }
+        if (!providerIds.includes(arg)) {
+          return {
+            kind: 'error',
+            text: `advisor: provider "${arg}" is not configured; offered: ${providerIds.join(', ') || 'none'}`,
+          }
+        }
+        const ids = await offeredModels(ctx, arg)
+        if (ids.length > 0 && !ids.includes(current.model)) {
+          return {
+            kind: 'error',
+            text: `advisor: model "${current.model}" is not offered on ${arg}; pick one first: ${ids.join(', ')}`,
+          }
+        }
+        state.provider = arg
+        const route = effectiveRoute(config.provider, config.model, config.effort, state)
+        const effortNote = await reconcileEffort(ctx, route, state)
+        writeState(state)
+        return { kind: 'success', text: [status(config, state), ...effortNote === undefined ? [] : [effortNote]].join('\n') }
+      }
       if (input === 'test') {
         invocation.agent.followup(createUserMessage({
           content: [{ type: 'text', text: `${MARKER} [NIT] advisor test note — delivery works; ignore it.` }],
@@ -244,7 +337,7 @@ export function apply(ctx: Context, config: AdvisorConfig): void {
         }))
         return { kind: 'success', text: 'advisor: test note queued' }
       }
-      return { kind: 'error', text: `Usage: /advisor [on|off|status|effort <id>|test]\n${status(config, state)}` }
+      return { kind: 'error', text: `Usage: /advisor [on|off|status|model <id>|provider <name>|effort <id>|test]\n${status(config, state)}` }
     },
   })
 

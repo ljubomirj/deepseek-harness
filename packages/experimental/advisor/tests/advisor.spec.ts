@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 import type { Message } from '@deepseek-ai/dsh-llm'
-import { buildPacket, isAdvisorTurn, parseAdvice, MARKER } from '../src/logic.ts'
+import { buildPacket, effectiveRoute, isAdvisorTurn, parseAdvice, splitProviderModel, MARKER } from '../src/logic.ts'
 
 function message(role: Message['role'], text: string): Message {
   // Message is a union: a tool-result member also needs source/toolCallId, so the
@@ -38,6 +38,37 @@ describe('parseAdvice', () => {
 
   it('reports untagged prose as malformed', () => {
     expect(parseAdvice('I think this is fine').kind).toBe('malformed')
+  })
+})
+
+describe('effectiveRoute', () => {
+  it('uses configured values without overrides', () => {
+    expect(effectiveRoute('opencode-go', 'gpt-6-luna', 'xhigh', { enabled: true }))
+      .toEqual({ provider: 'opencode-go', model: 'gpt-6-luna', effort: 'xhigh' })
+  })
+
+  it('runtime provider, model and explicit-empty effort win', () => {
+    const state: import('../src/logic.ts').AdvisorState = {
+      enabled: true, provider: 'opencode-go', model: 'deepseek-v4.1-flash', effort: '',
+    }
+    expect(effectiveRoute('opencode-go', 'gpt-6-luna', 'xhigh', state))
+      .toEqual({ provider: 'opencode-go', model: 'deepseek-v4.1-flash', effort: '' })
+  })
+})
+
+describe('splitProviderModel', () => {
+  it('splits provider/model at the first slash', () => {
+    expect(splitProviderModel('opencode-go/gpt-6-luna')).toEqual({ provider: 'opencode-go', model: 'gpt-6-luna' })
+  })
+
+  it('keeps a slashed model id whole when it has no provider prefix', () => {
+    expect(splitProviderModel('anthropic/claude-sonnet-4.6')).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4.6' })
+    expect(splitProviderModel('gpt-6-luna')).toEqual({ model: 'gpt-6-luna' })
+  })
+
+  it('treats empty and malformed arguments as a bare model', () => {
+    expect(splitProviderModel('  /leading')).toEqual({ model: '/leading' })
+    expect(splitProviderModel('trailing/')).toEqual({ model: 'trailing/' })
   })
 })
 

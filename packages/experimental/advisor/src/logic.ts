@@ -15,6 +15,67 @@ export interface Packet {
   readonly messages: number
 }
 
+/** Runtime overrides persisted by `/advisor model|provider|effort`. */
+export interface AdvisorState {
+  /** Master switch toggle; absent keeps the configured default. */
+  enabled: boolean
+  /**
+   * Runtime-selected reasoning effort; `''` sends none; absent keeps the
+   * configured one.
+   */
+  effort?: string
+  /** Runtime-selected reviewer provider; absent keeps the configured one. */
+  provider?: string
+  /** Runtime-selected reviewer model; absent keeps the configured one. */
+  model?: string
+}
+
+/** The reviewer route a review call actually uses. */
+export interface AdvisorRoute {
+  readonly provider: string
+  readonly model: string
+  /** `''` sends no reasoning effort. */
+  readonly effort: string
+}
+
+/**
+ * Resolve the reviewer route: runtime overrides win over configured values.
+ * @param provider - configured provider route.
+ * @param model - configured model id.
+ * @param effort - configured effort, `''` meaning none.
+ * @param state - runtime overrides.
+ * @returns the effective route for one review call.
+ */
+export function effectiveRoute(
+  provider: string,
+  model: string,
+  effort: string,
+  state: AdvisorState,
+): AdvisorRoute {
+  return {
+    provider: state.provider ?? provider,
+    model: state.model ?? model,
+    effort: state.effort === undefined ? effort : state.effort,
+  }
+}
+
+/**
+ * Split a `/advisor model` argument: `provider/model` when the first segment
+ * names a provider, otherwise a bare model id. Slashed model ids that do not
+ * start with a provider stay whole; the command resolves them against the
+ * effective provider.
+ * @param arg - raw command argument.
+ * @returns the optional provider plus the model id.
+ */
+export function splitProviderModel(arg: string): { provider?: string; model: string } {
+  const text = arg.trim()
+  const slash = text.indexOf('/')
+  if (slash > 0 && slash < text.length - 1) {
+    return { provider: text.slice(0, slash), model: text.slice(slash + 1) }
+  }
+  return { model: text }
+}
+
 /** Advice extracted from the reviewer's answer. */
 export type Advice =
   | { readonly kind: 'silence' }
