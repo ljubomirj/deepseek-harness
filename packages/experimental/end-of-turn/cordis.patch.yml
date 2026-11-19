@@ -1,0 +1,3 @@
+- insert:
+    - id: end-of-turn
+      name: '@deepseek-ai/dsh-end-of-turn'

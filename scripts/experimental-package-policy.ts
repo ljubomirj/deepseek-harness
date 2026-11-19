@@ -25,6 +25,7 @@ export const EXPERIMENTAL_PACKAGE_NAME_EXCEPTIONS: Readonly<Record<string, strin
   'packages/experimental/webhook-github': '@deepseek-ai/dsh-webhook-github',
   'packages/experimental/action-cards': '@deepseek-ai/dsh-action-cards',
   'packages/experimental/advisor': '@deepseek-ai/dsh-advisor',
+  'packages/experimental/end-of-turn': '@deepseek-ai/dsh-end-of-turn',
   'packages/experimental/client-ui-action-cards': '@deepseek-ai/dsh-client-ui-action-cards',
   'packages/experimental/creation-recommendations': '@deepseek-ai/dsh-creation-recommendations',
   'packages/experimental/client-ui-creation-recommendations': '@deepseek-ai/dsh-client-ui-creation-recommendations',
